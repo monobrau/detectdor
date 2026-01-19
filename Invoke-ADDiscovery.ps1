@@ -659,6 +659,55 @@ function Get-VirtualizationPlatforms {
     # Also check current machine
     $serversToCheck += $env:COMPUTERNAME
     
+    # Search AD for potential hypervisor hosts
+    Write-Host "  [*] Searching Active Directory for hypervisor hosts..." -ForegroundColor Gray
+    try {
+        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+        $searcher = [adsisearcher]"(&(objectClass=computer)(|(name=*esx*)(name=*vcenter*)(name=*vmware*)(name=*hyperv*)(name=*hvhost*)(name=*xen*)(name=*citrix*)))"
+        $searcher.SearchRoot = [adsi]"LDAP://$($domain.GetDirectoryEntry().distinguishedName)"
+        $searcher.PageSize = 1000
+        $hypervisorHosts = $searcher.FindAll()
+        
+        foreach ($hostObj in $hypervisorHosts) {
+            $hostName = $hostObj.Properties['name'][0]
+            if ($hostName -and $hostName -notin $serversToCheck) {
+                $serversToCheck += $hostName
+                Write-Host "    [+] Found potential hypervisor host: $hostName" -ForegroundColor DarkGray
+            }
+        }
+    } catch {
+        Write-Host "    [-] Could not query AD for hypervisor hosts: $_" -ForegroundColor DarkGray
+    }
+    
+    # Also check for Hyper-V hosts via AD (Windows Server with Hyper-V role)
+    try {
+        $searcher = [adsisearcher]"(&(objectClass=computer)(operatingSystem=Windows Server*))"
+        $searcher.SearchRoot = [adsi]"LDAP://$($domain.GetDirectoryEntry().distinguishedName)"
+        $searcher.PageSize = 1000
+        $windowsServers = $searcher.FindAll()
+        
+        # Sample a subset to check for Hyper-V (check first 50 to avoid too many checks)
+        $sampleSize = [Math]::Min(50, $windowsServers.Count)
+        $sampledServers = $windowsServers | Select-Object -First $sampleSize
+        
+        foreach ($serverObj in $sampledServers) {
+            $serverName = $serverObj.Properties['dNSHostName'][0]
+            if (-not $serverName) {
+                $serverName = $serverObj.Properties['name'][0]
+            }
+            if ($serverName -and $serverName -notin $serversToCheck) {
+                # Quick check for Hyper-V service
+                try {
+                    $hypervService = Get-CimInstance -ComputerName $serverName -ClassName Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue
+                    if ($hypervService) {
+                        $serversToCheck += $serverName
+                        Write-Host "    [+] Found Hyper-V host: $serverName" -ForegroundColor DarkGray
+                    }
+                } catch {}
+            }
+        }
+    } catch {}
+    
     foreach ($server in $serversToCheck) {
         Write-Host "  [*] Checking $server for virtualization..." -ForegroundColor DarkGray
         
@@ -957,18 +1006,78 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Only add to results if virtualization was detected
-        if ($vmInfo.IsVirtual) {
+        # Check if this is a hypervisor host (not just a VM)
+        $isHypervisorHost = $false
+        $hypervisorType = $null
+        
+        # Check for VMware ESXi/vCenter
+        try {
+            # ESXi hosts typically have SSH or hostd service
+            $vmwareHostd = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='hostd' OR Name='vmware-hostd'" -ErrorAction SilentlyContinue
+            if ($vmwareHostd) {
+                $isHypervisorHost = $true
+                $hypervisorType = "VMware ESXi"
+                $vmInfo.Details.HypervisorHost = $true
+                $vmInfo.Details.HypervisorType = "VMware ESXi"
+            }
+            
+            # Check for vCenter (vpxd service)
+            $vcenterService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='vpxd' OR DisplayName LIKE '%vCenter%'" -ErrorAction SilentlyContinue
+            if ($vcenterService) {
+                $isHypervisorHost = $true
+                $hypervisorType = "VMware vCenter"
+                $vmInfo.Details.HypervisorHost = $true
+                $vmInfo.Details.HypervisorType = "VMware vCenter"
+            }
+        } catch {}
+        
+        # Check for Hyper-V host (vmms service)
+        try {
+            $vmmsService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue
+            if ($vmmsService) {
+                $isHypervisorHost = $true
+                $hypervisorType = "Hyper-V Host"
+                $vmInfo.Details.HypervisorHost = $true
+                $vmInfo.Details.HypervisorType = "Hyper-V Host"
+                $vmInfo.Details.HyperVService = @{
+                    Status = $vmmsService.State
+                    StartMode = $vmmsService.StartMode
+                }
+            }
+        } catch {}
+        
+        # Check for Citrix XenServer
+        try {
+            $xenService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name LIKE '%xen%' OR DisplayName LIKE '%XenServer%'" -ErrorAction SilentlyContinue
+            if ($xenService) {
+                $isHypervisorHost = $true
+                $hypervisorType = "Citrix XenServer"
+                $vmInfo.Details.HypervisorHost = $true
+                $vmInfo.Details.HypervisorType = "Citrix XenServer"
+            }
+        } catch {}
+        
+        # Only add to results if virtualization was detected (VM or hypervisor host)
+        if ($vmInfo.IsVirtual -or $isHypervisorHost) {
+            if ($isHypervisorHost) {
+                $vmInfo.IsVirtual = $true  # Mark as virtualized system
+                if (-not ($vmInfo.Platform -contains $hypervisorType)) {
+                    $vmInfo.Platform += $hypervisorType
+                }
+            }
             $Results.Virtualization += $vmInfo
             $platformStr = if ($vmInfo.Platform.Count -gt 0) { $vmInfo.Platform -join ', ' } else { "Unknown" }
-            Write-Host "  [+] Virtualization detected on $server : $platformStr" -ForegroundColor Green
+            $hostType = if ($isHypervisorHost) { " (Hypervisor Host)" } else { "" }
+            Write-Host "  [+] Virtualization detected on $server : $platformStr$hostType" -ForegroundColor Green
         }
     }
     
     if ($Results.Virtualization.Count -eq 0) {
         Write-Host "  [-] No virtualization platforms detected" -ForegroundColor Gray
     } else {
-        Write-Host "  [+] Total virtualized systems: $($Results.Virtualization.Count)" -ForegroundColor Green
+        $vmCount = ($Results.Virtualization | Where-Object { $_.Details.HypervisorHost -ne $true }).Count
+        $hypervisorCount = ($Results.Virtualization | Where-Object { $_.Details.HypervisorHost -eq $true }).Count
+        Write-Host "  [+] Total virtualized systems: $($Results.Virtualization.Count) (VMs: $vmCount, Hypervisor Hosts: $hypervisorCount)" -ForegroundColor Green
     }
 }
 

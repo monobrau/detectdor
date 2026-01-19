@@ -34,6 +34,14 @@ $Results = @{
     DHCPServers = @()
     DNSServers = @()
     EntraADConnect = @()
+    FSMORoles = @{}
+    DomainInfo = @{}
+    Trusts = @()
+    ADSites = @()
+    ExchangeServers = @()
+    SQLServers = @()
+    FileServers = @()
+    CertificateAuthorities = @()
     Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 }
 
@@ -335,12 +343,321 @@ function Get-EntraADConnect {
     }
 }
 
+# Function to discover FSMO Roles
+function Get-FSMORoles {
+    Write-Host "`n[*] Discovering FSMO Roles..." -ForegroundColor Yellow
+    
+    try {
+        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+        $forest = $domain.Forest
+        
+        $Results.FSMORoles = @{
+            SchemaMaster = $forest.SchemaRoleOwner.Name
+            DomainNamingMaster = $forest.NamingRoleOwner.Name
+            PDCEmulator = $domain.PdcRoleOwner.Name
+            RIDMaster = $domain.RidRoleOwner.Name
+            InfrastructureMaster = $domain.InfrastructureRoleOwner.Name
+        }
+        
+        Write-Host "  [+] Schema Master: $($Results.FSMORoles.SchemaMaster)" -ForegroundColor Green
+        Write-Host "  [+] Domain Naming Master: $($Results.FSMORoles.DomainNamingMaster)" -ForegroundColor Green
+        Write-Host "  [+] PDC Emulator: $($Results.FSMORoles.PDCEmulator)" -ForegroundColor Green
+        Write-Host "  [+] RID Master: $($Results.FSMORoles.RIDMaster)" -ForegroundColor Green
+        Write-Host "  [+] Infrastructure Master: $($Results.FSMORoles.InfrastructureMaster)" -ForegroundColor Green
+    } catch {
+        Write-Host "  [!] Error discovering FSMO roles: $_" -ForegroundColor Red
+    }
+}
+
+# Function to discover Domain and Forest Information
+function Get-DomainInfo {
+    Write-Host "`n[*] Discovering Domain and Forest Information..." -ForegroundColor Yellow
+    
+    try {
+        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+        $forest = $domain.Forest
+        
+        $Results.DomainInfo = @{
+            DomainName = $domain.Name
+            DomainNetBIOSName = $domain.GetDirectoryEntry().Properties['name'].Value
+            DomainSID = $domain.GetDirectoryEntry().Properties['objectSid'].Value
+            DomainFunctionalLevel = $domain.DomainMode.ToString()
+            ForestName = $forest.Name
+            ForestFunctionalLevel = $forest.ForestMode.ToString()
+            DomainControllersCount = $domain.DomainControllers.Count
+            DomainsInForest = @()
+            SitesInForest = @()
+        }
+        
+        # Get all domains in forest
+        foreach ($dom in $forest.Domains) {
+            $Results.DomainInfo.DomainsInForest += $dom.Name
+        }
+        
+        # Get all sites
+        foreach ($site in $forest.Sites) {
+            $Results.DomainInfo.SitesInForest += $site.Name
+        }
+        
+        Write-Host "  [+] Domain: $($Results.DomainInfo.DomainName)" -ForegroundColor Green
+        Write-Host "  [+] Domain Functional Level: $($Results.DomainInfo.DomainFunctionalLevel)" -ForegroundColor Green
+        Write-Host "  [+] Forest: $($Results.DomainInfo.ForestName)" -ForegroundColor Green
+        Write-Host "  [+] Forest Functional Level: $($Results.DomainInfo.ForestFunctionalLevel)" -ForegroundColor Green
+        Write-Host "  [+] Domains in Forest: $($Results.DomainInfo.DomainsInForest.Count)" -ForegroundColor Green
+        Write-Host "  [+] Sites in Forest: $($Results.DomainInfo.SitesInForest.Count)" -ForegroundColor Green
+    } catch {
+        Write-Host "  [!] Error discovering domain info: $_" -ForegroundColor Red
+    }
+}
+
+# Function to discover Trusts
+function Get-Trusts {
+    Write-Host "`n[*] Discovering Domain and Forest Trusts..." -ForegroundColor Yellow
+    
+    try {
+        $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+        $forest = $domain.Forest
+        
+        # Domain trusts
+        foreach ($trust in $domain.GetAllTrustRelationships()) {
+            $trustInfo = @{
+                TrustedDomain = $trust.TargetName
+                TrustType = $trust.TrustType.ToString()
+                TrustDirection = $trust.TrustDirection.ToString()
+                SourceName = $trust.SourceName
+            }
+            $Results.Trusts += $trustInfo
+            Write-Host "  [+] Trust: $($trustInfo.SourceName) -> $($trustInfo.TrustedDomain) ($($trustInfo.TrustType), $($trustInfo.TrustDirection))" -ForegroundColor Green
+        }
+        
+        # Forest trusts
+        foreach ($trust in $forest.GetAllTrustRelationships()) {
+            $trustInfo = @{
+                TrustedDomain = $trust.TargetName
+                TrustType = "Forest"
+                TrustDirection = $trust.TrustDirection.ToString()
+                SourceName = $trust.SourceName
+            }
+            $Results.Trusts += $trustInfo
+            Write-Host "  [+] Forest Trust: $($trustInfo.SourceName) -> $($trustInfo.TrustedDomain) ($($trustInfo.TrustDirection))" -ForegroundColor Green
+        }
+        
+        if ($Results.Trusts.Count -eq 0) {
+            Write-Host "  [-] No trusts found" -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "  [!] Error discovering trusts: $_" -ForegroundColor Red
+    }
+}
+
+# Function to discover AD Sites
+function Get-ADSites {
+    Write-Host "`n[*] Discovering AD Sites..." -ForegroundColor Yellow
+    
+    try {
+        $forest = [System.DirectoryServices.ActiveDirectory.Forest]::GetCurrentForest()
+        
+        foreach ($site in $forest.Sites) {
+            $siteInfo = @{
+                Name = $site.Name
+                Subnets = @()
+                DomainControllers = @()
+            }
+            
+            # Get subnets
+            foreach ($subnet in $site.Subnets) {
+                $siteInfo.Subnets += $subnet.Name
+            }
+            
+            # Get DCs in site
+            foreach ($dc in $site.Servers) {
+                $siteInfo.DomainControllers += $dc.Name
+            }
+            
+            $Results.ADSites += $siteInfo
+            Write-Host "  [+] Site: $($siteInfo.Name) (Subnets: $($siteInfo.Subnets.Count), DCs: $($siteInfo.DomainControllers.Count))" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "  [!] Error discovering AD sites: $_" -ForegroundColor Red
+    }
+}
+
+# Function to discover Exchange Servers
+function Get-ExchangeServers {
+    Write-Host "`n[*] Discovering Exchange Servers..." -ForegroundColor Yellow
+    
+    try {
+        $searcher = [adsisearcher]"(&(objectClass=msExchExchangeServer))"
+        $searcher.SearchRoot = [adsi]"LDAP://$([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().GetDirectoryEntry().distinguishedName)"
+        $exchangeServers = $searcher.FindAll()
+        
+        foreach ($exServer in $exchangeServers) {
+            $exInfo = @{
+                Name = $exServer.Properties['name'][0]
+                Version = $null
+                Roles = @()
+            }
+            
+            # Try to get version
+            if ($exServer.Properties['serialNumber']) {
+                $exInfo.Version = $exServer.Properties['serialNumber'][0]
+            }
+            
+            # Try to get server roles
+            if ($exServer.Properties['msExchServerSite']) {
+                $exInfo.Roles += "Mailbox"
+            }
+            
+            $Results.ExchangeServers += $exInfo
+            Write-Host "  [+] Exchange Server: $($exInfo.Name)" -ForegroundColor Green
+        }
+        
+        if ($Results.ExchangeServers.Count -eq 0) {
+            Write-Host "  [-] No Exchange servers found" -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "  [-] No Exchange servers found (or Exchange schema not present)" -ForegroundColor Gray
+    }
+}
+
+# Function to discover SQL Servers
+function Get-SQLServers {
+    Write-Host "`n[*] Discovering SQL Servers..." -ForegroundColor Yellow
+    
+    try {
+        # Method 1: Check for SQL Server service on discovered servers
+        $serversToCheck = @()
+        foreach ($dc in $Results.DomainControllers) {
+            $serversToCheck += $dc.Name
+        }
+        $serversToCheck += $env:COMPUTERNAME
+        
+        foreach ($server in $serversToCheck) {
+            try {
+                # Check for SQL Server services
+                $sqlServices = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name LIKE 'MSSQL%' OR Name LIKE 'SQLServer%' OR DisplayName LIKE '%SQL Server%'" -ErrorAction SilentlyContinue
+                if ($sqlServices) {
+                    foreach ($svc in $sqlServices) {
+                        $sqlInfo = @{
+                            Server = $server
+                            ServiceName = $svc.Name
+                            DisplayName = $svc.DisplayName
+                            Status = $svc.State
+                            InstanceName = $null
+                        }
+                        
+                        # Extract instance name from service name
+                        if ($svc.Name -match 'MSSQL\$(\w+)') {
+                            $sqlInfo.InstanceName = $matches[1]
+                        } elseif ($svc.Name -eq 'MSSQLSERVER') {
+                            $sqlInfo.InstanceName = 'Default'
+                        }
+                        
+                        $Results.SQLServers += $sqlInfo
+                        Write-Host "  [+] SQL Server: $server ($($sqlInfo.InstanceName))" -ForegroundColor Green
+                    }
+                }
+            } catch {}
+        }
+        
+        if ($Results.SQLServers.Count -eq 0) {
+            Write-Host "  [-] No SQL servers found" -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "  [!] Error discovering SQL servers: $_" -ForegroundColor Red
+    }
+}
+
+# Function to discover File Servers (DFS)
+function Get-FileServers {
+    Write-Host "`n[*] Discovering File Servers (DFS)..." -ForegroundColor Yellow
+    
+    try {
+        # Check for DFS namespaces
+        $searcher = [adsisearcher]"(&(objectClass=msDFS-Namespace))"
+        $searcher.SearchRoot = [adsi]"LDAP://CN=System,$([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().GetDirectoryEntry().distinguishedName)"
+        $dfsNamespaces = $searcher.FindAll()
+        
+        foreach ($namespace in $dfsNamespaces) {
+            $dfsInfo = @{
+                Name = $namespace.Properties['name'][0]
+                Type = "DFS Namespace"
+            }
+            $Results.FileServers += $dfsInfo
+            Write-Host "  [+] DFS Namespace: $($dfsInfo.Name)" -ForegroundColor Green
+        }
+        
+        # Check for file server role on discovered servers
+        foreach ($dc in $Results.DomainControllers) {
+            try {
+                $fileServerRole = Get-CimInstance -ComputerName $dc.Name -ClassName Win32_SystemServices -Filter "Name='LanmanServer'" -ErrorAction SilentlyContinue
+                if ($fileServerRole) {
+                    $fsInfo = @{
+                        Name = $dc.Name
+                        Type = "File Server"
+                        Roles = "Domain Controller, File Server"
+                    }
+                    $Results.FileServers += $fsInfo
+                    Write-Host "  [+] File Server: $($fsInfo.Name)" -ForegroundColor Green
+                }
+            } catch {}
+        }
+        
+        if ($Results.FileServers.Count -eq 0) {
+            Write-Host "  [-] No file servers or DFS namespaces found" -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "  [-] No DFS namespaces found" -ForegroundColor Gray
+    }
+}
+
+# Function to discover Certificate Authorities
+function Get-CertificateAuthorities {
+    Write-Host "`n[*] Discovering Certificate Authorities..." -ForegroundColor Yellow
+    
+    try {
+        $searcher = [adsisearcher]"(&(objectClass=pKIEnrollmentService))"
+        $searcher.SearchRoot = [adsi]"LDAP://CN=Configuration,$([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().GetDirectoryEntry().distinguishedName)"
+        $caServers = $searcher.FindAll()
+        
+        foreach ($ca in $caServers) {
+            $caInfo = @{
+                Name = $ca.Properties['dNSHostName'][0]
+                CommonName = $ca.Properties['cn'][0]
+                CertificateTemplates = @()
+            }
+            
+            # Get certificate templates
+            if ($ca.Properties['certificateTemplates']) {
+                $caInfo.CertificateTemplates = $ca.Properties['certificateTemplates']
+            }
+            
+            $Results.CertificateAuthorities += $caInfo
+            Write-Host "  [+] CA: $($caInfo.Name) ($($caInfo.CommonName))" -ForegroundColor Green
+        }
+        
+        if ($Results.CertificateAuthorities.Count -eq 0) {
+            Write-Host "  [-] No Certificate Authorities found" -ForegroundColor Gray
+        }
+    } catch {
+        Write-Host "  [-] No Certificate Authorities found (or AD CS not present)" -ForegroundColor Gray
+    }
+}
+
 # Main execution
 try {
     Get-DomainControllers
     Get-DHCPServers
     Get-DNSServers
     Get-EntraADConnect
+    Get-FSMORoles
+    Get-DomainInfo
+    Get-Trusts
+    Get-ADSites
+    Get-ExchangeServers
+    Get-SQLServers
+    Get-FileServers
+    Get-CertificateAuthorities
     
     # Output summary
     Write-Host "`n=== Discovery Summary ===" -ForegroundColor Cyan
@@ -348,6 +665,12 @@ try {
     Write-Host "DHCP Servers: $($Results.DHCPServers.Count)" -ForegroundColor White
     Write-Host "DNS Servers: $($Results.DNSServers.Count)" -ForegroundColor White
     Write-Host "Entra AD Connect Installations: $($Results.EntraADConnect.Count)" -ForegroundColor White
+    Write-Host "AD Sites: $($Results.ADSites.Count)" -ForegroundColor White
+    Write-Host "Domain Trusts: $($Results.Trusts.Count)" -ForegroundColor White
+    Write-Host "Exchange Servers: $($Results.ExchangeServers.Count)" -ForegroundColor White
+    Write-Host "SQL Servers: $($Results.SQLServers.Count)" -ForegroundColor White
+    Write-Host "File Servers/DFS: $($Results.FileServers.Count)" -ForegroundColor White
+    Write-Host "Certificate Authorities: $($Results.CertificateAuthorities.Count)" -ForegroundColor White
     
     # Output detailed results as JSON only if requested
     if ($OutputJson) {

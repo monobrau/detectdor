@@ -28,6 +28,9 @@ $url = 'https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADD
 
 # Export results to JSON file (with cache-busting)
 $url = 'https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content | ConvertTo-Json -Depth 10 | Out-File discovery-results.json
+
+# With nmap for enhanced virtualization details (requires nmap installed)
+$url = 'https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content -UseNmap
 ```
 
 **Note:** The cache-busting version ensures you always download the latest script version, bypassing any cached copies.
@@ -113,6 +116,40 @@ When using the `-UseNmap` parameter, the script will perform additional port sca
 - **OS Fingerprinting**: Attempts to identify OS details via nmap
 - **Enhanced Details**: Provides additional network information in the results
 
+#### Installing Nmap
+
+**Windows:**
+1. Download nmap from https://nmap.org/download.html
+2. Run the installer (recommended: install to default location `C:\Program Files (x86)\Nmap`)
+3. Ensure nmap is added to PATH (installer usually does this automatically)
+4. Verify installation: `nmap --version`
+
+**Linux/Mac:**
+```bash
+# Ubuntu/Debian
+sudo apt-get install nmap
+
+# CentOS/RHEL
+sudo yum install nmap
+
+# macOS
+brew install nmap
+```
+
+#### Using Nmap with the Script
+
+**Local execution:**
+```powershell
+.\Invoke-ADDiscovery.ps1 -UseNmap
+```
+
+**GitHub execution:**
+```powershell
+$url = 'https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1'
+$cb = if ($url -match '\?') { '&' } else { '?' }
+iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content -UseNmap
+```
+
 **Note**: Nmap must be installed and accessible in PATH or standard installation directories for this feature to work. The script will gracefully skip nmap scanning if it's not available.
 
 ## Output
@@ -142,9 +179,13 @@ Started: 2026-01-19 16:00:00
   [+] Entra AD Connect FOUND on: DC01 (Methods: Service, Registry)
 
 [*] Discovering Virtualization Platforms...
+  [*] Checking DC01 for virtualization...
   [+] Virtualization detected on DC01 : VMware
-  [+] Virtualization detected on SQL01 : Hyper-V
-  [+] Total virtualized systems: 2
+  [*] Checking SQL01 for virtualization...
+    [*] Running nmap scan on SQL01 (ports: 443,5985,5986,902)...
+    [+] Nmap found 3 open port(s)
+  [+] Virtualization detected on SQL01 : Hyper-V (Hypervisor Host)
+  [+] Total virtualized systems: 2 (VMs: 1, Hypervisor Hosts: 1)
 
 === Discovery Summary ===
 Domain Controllers: 2

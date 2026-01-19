@@ -177,38 +177,44 @@ function Get-EntraADConnect {
     $serversToCheck += $env:COMPUTERNAME
     
     # Quick check first - if nothing found, skip detailed checks
+    # Check local registry first (fastest, no network)
     $quickCheckFound = $false
     
-    foreach ($server in $serversToCheck) {
-        # Quick check: ADSync service (fastest method)
-        try {
-            $adsyncService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='ADSync'" -ErrorAction SilentlyContinue
-            if ($adsyncService) {
-                $quickCheckFound = $true
-                break
-            }
-        } catch {}
-        
-        # Quick check: Registry (local only, fast)
-        try {
-            if ($server -eq $env:COMPUTERNAME) {
-                $regPath = "HKLM:\SOFTWARE\Microsoft\Azure AD Connect"
-                if (Test-Path $regPath) {
+    try {
+        $regPath = "HKLM:\SOFTWARE\Microsoft\Azure AD Connect"
+        if (Test-Path $regPath) {
+            $quickCheckFound = $true
+        }
+    } catch {}
+    
+    # If local check found nothing, do quick remote service checks
+    if (-not $quickCheckFound) {
+        foreach ($server in $serversToCheck) {
+            # Skip local machine (already checked)
+            if ($server -eq $env:COMPUTERNAME) { continue }
+            
+            # Quick check: ADSync service (fastest remote method)
+            try {
+                $adsyncService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='ADSync'" -ErrorAction SilentlyContinue
+                if ($adsyncService) {
                     $quickCheckFound = $true
                     break
                 }
-            }
-        } catch {}
+            } catch {}
+        }
     }
     
     # If quick check found nothing, skip detailed checks
     if (-not $quickCheckFound) {
-        Write-Host "  [-] No Entra AD Connect installations found (skipped detailed checks)" -ForegroundColor Gray
+        Write-Host "  [-] No Entra AD Connect installations found" -ForegroundColor Gray
         return
     }
     
     # Detailed checks only if quick check found something
+    Write-Host "  [*] Entra AD Connect detected, performing detailed checks..." -ForegroundColor Gray
     foreach ($server in $serversToCheck) {
+        Write-Host "    [*] Checking $server..." -ForegroundColor DarkGray
+        
         $entraInfo = @{
             Server = $server
             Found = $false
@@ -342,7 +348,7 @@ try {
     
     # Output detailed results as JSON
     Write-Host "`n=== Detailed Results (JSON) ===" -ForegroundColor Cyan
-    $Results | ConvertTo-Json -Depth 10
+    $Results | ConvertTo-Json -Depth 20
     
     # Return results object
     return $Results

@@ -1336,21 +1336,38 @@ function Get-NmapDetails {
     return $null
 }
 
-# Main execution
-try {
-    Get-DomainControllers
-    Get-DHCPServers
-    Get-DNSServers
-    Get-EntraADConnect
-    Get-FSMORoles
-    Get-DomainInfo
-    Get-Trusts
-    Get-ADSites
-    Get-ExchangeServers
-    Get-SQLServers
-    Get-FileServers
-    Get-CertificateAuthorities
-    Get-VirtualizationPlatforms
+# Main execution function (allows parameter passing when executed from GitHub)
+function Invoke-ADDiscovery {
+    param(
+        [Parameter(Mandatory=$false)]
+        [switch]$OutputJson,
+        
+        [Parameter(Mandatory=$false)]
+        [switch]$UseNmap
+    )
+    
+    # Use script-level parameters if function parameters not provided
+    if (-not $PSBoundParameters.ContainsKey('OutputJson')) {
+        $OutputJson = $script:OutputJson
+    }
+    if (-not $PSBoundParameters.ContainsKey('UseNmap')) {
+        $UseNmap = $script:UseNmap
+    }
+    
+    try {
+        Get-DomainControllers
+        Get-DHCPServers
+        Get-DNSServers
+        Get-EntraADConnect
+        Get-FSMORoles
+        Get-DomainInfo
+        Get-Trusts
+        Get-ADSites
+        Get-ExchangeServers
+        Get-SQLServers
+        Get-FileServers
+        Get-CertificateAuthorities
+        Get-VirtualizationPlatforms
     
     # Output summary
     Write-Host "`n=== Discovery Summary ===" -ForegroundColor Cyan
@@ -1366,17 +1383,27 @@ try {
     Write-Host "Certificate Authorities: $($Results.CertificateAuthorities.Count)" -ForegroundColor White
     Write-Host "Virtualized Systems: $($Results.Virtualization.Count)" -ForegroundColor White
     
-    # Output detailed results as JSON only if requested
-    if ($OutputJson) {
-        Write-Host "`n=== Detailed Results (JSON) ===" -ForegroundColor Cyan
-        $Results | ConvertTo-Json -Depth 20
+        # Output detailed results as JSON only if requested
+        if ($OutputJson) {
+            Write-Host "`n=== Detailed Results (JSON) ===" -ForegroundColor Cyan
+            $Results | ConvertTo-Json -Depth 20
+        }
+        
+        # Return results object
+        return $Results
+        
+    } catch {
+        Write-Host "`n[!] Fatal Error: $_" -ForegroundColor Red
+        Write-Host $_.ScriptStackTrace -ForegroundColor Red
+        return $null
     }
-    
-    # Return results object
-    return $Results
-    
-} catch {
-    Write-Host "`n[!] Fatal Error: $_" -ForegroundColor Red
-    Write-Host $_.ScriptStackTrace -ForegroundColor Red
-    return $null
+}
+
+# Store script-level parameters for function access
+$script:OutputJson = $OutputJson
+$script:UseNmap = $UseNmap
+
+# Auto-execute if run as script (not when called as function)
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-ADDiscovery -OutputJson:$OutputJson -UseNmap:$UseNmap
 }

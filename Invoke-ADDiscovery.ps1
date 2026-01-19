@@ -772,58 +772,109 @@ function Get-VirtualizationPlatforms {
     # Scan non-AD IPs from discovered subnets
     Write-Host "  [*] Scanning subnets for non-AD virtualization hosts..." -ForegroundColor Gray
     $subnetIPs = @()
+    $allSubnets = @()
     
-    # Extract IP ranges from AD Site subnets
+    # Method 1: Extract IP ranges from AD Site subnets (from Results)
+    Write-Host "    [*] Checking AD Sites for subnets..." -ForegroundColor DarkGray
     foreach ($site in $Results.ADSites) {
+        Write-Host "      [*] Site: $($site.Name) has $($site.Subnets.Count) subnet(s)" -ForegroundColor DarkGray
         foreach ($subnet in $site.Subnets) {
-            # Subnet format is typically "192.168.1.0/24" (CIDR) or "192.168.1.0/255.255.255.0" (subnet mask)
-            $prefixLength = $null
-            $subnetIP = $null
+            Write-Host "        [*] Subnet format: '$subnet'" -ForegroundColor DarkGray
+            $allSubnets += $subnet
+        }
+    }
+    
+    # Method 2: Query AD directly for subnet objects if site subnets are empty
+    if ($allSubnets.Count -eq 0) {
+        Write-Host "    [*] No subnets found in sites, querying AD directly for subnet objects..." -ForegroundColor DarkGray
+        try {
+            $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+            $searcher = [adsisearcher]"(&(objectClass=subnet))"
+            $searcher.SearchRoot = [adsi]"LDAP://CN=Subnets,CN=Sites,CN=Configuration,$($domain.GetDirectoryEntry().distinguishedName)"
+            $searcher.PageSize = 1000
+            $adSubnets = $searcher.FindAll()
             
-            # Try CIDR notation first (e.g., "192.168.1.0/24")
-            if ($subnet -match '(\d+\.\d+\.\d+\.\d+)/(\d+)') {
-                $subnetIP = $matches[1]
-                $prefixLength = [int]$matches[2]
-            }
-            # Try subnet mask format (e.g., "192.168.1.0/255.255.255.0")
-            elseif ($subnet -match '(\d+\.\d+\.\d+\.\d+)/(\d+\.\d+\.\d+\.\d+)') {
-                $subnetIP = $matches[1]
-                $subnetMask = $matches[2]
-                # Convert subnet mask to prefix length
-                $prefixLength = Convert-SubnetMaskToPrefixLength -SubnetMask $subnetMask
-            }
-            
-            if ($subnetIP -and $prefixLength) {
-                # Only scan /24 or smaller subnets (avoid scanning huge ranges)
-                if ($prefixLength -ge 24 -and $prefixLength -le 32) {
-                    try {
-                        # Generate IPs to scan (sample first 10 and last 10 IPs, plus common hypervisor IPs)
-                        $ipsToScan = Get-SubnetIPsToScan -Subnet $subnetIP -PrefixLength $prefixLength
-                        $subnetIPs += $ipsToScan
-                        Write-Host "    [*] Found subnet $subnet, will scan $($ipsToScan.Count) IPs" -ForegroundColor DarkGray
-                    } catch {
-                        Write-Host "    [-] Error processing subnet $subnet : $_" -ForegroundColor DarkGray
-                    }
+            foreach ($adSubnet in $adSubnets) {
+                # Subnet name is in cn attribute, site is in siteObject attribute
+                $subnetName = $adSubnet.Properties['cn'][0]
+                if ($subnetName) {
+                    $allSubnets += $subnetName
+                    Write-Host "      [+] Found subnet in AD: $subnetName" -ForegroundColor DarkGray
                 }
+            }
+        } catch {
+            Write-Host "      [-] Could not query AD for subnets: $_" -ForegroundColor DarkGray
+        }
+    }
+    
+    # Process all discovered subnets
+    foreach ($subnet in $allSubnets) {
+        $prefixLength = $null
+        $subnetIP = $null
+        
+        # Try CIDR notation first (e.g., "192.168.1.0/24")
+        if ($subnet -match '(\d+\.\d+\.\d+\.\d+)/(\d+)') {
+            $subnetIP = $matches[1]
+            $prefixLength = [int]$matches[2]
+            Write-Host "      [+] Parsed CIDR subnet: $subnetIP/$prefixLength" -ForegroundColor DarkGray
+        }
+        # Try subnet mask format (e.g., "192.168.1.0/255.255.255.0")
+        elseif ($subnet -match '(\d+\.\d+\.\d+\.\d+)/(\d+\.\d+\.\d+\.\d+)') {
+            $subnetIP = $matches[1]
+            $subnetMask = $matches[2]
+            $prefixLength = Convert-SubnetMaskToPrefixLength -SubnetMask $subnetMask
+            Write-Host "      [+] Parsed subnet mask: $subnetIP/$subnetMask (prefix: $prefixLength)" -ForegroundColor DarkGray
+        }
+        # Try just IP address (assume /24)
+        elseif ($subnet -match '^(\d+\.\d+\.\d+\.\d+)$') {
+            $subnetIP = $matches[1]
+            $prefixLength = 24
+            Write-Host "      [+] Found IP address, assuming /24: $subnetIP/$prefixLength" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "      [-] Could not parse subnet format: '$subnet'" -ForegroundColor DarkGray
+        }
+        
+        if ($subnetIP -and $prefixLength) {
+            # Only scan /24 or smaller subnets (avoid scanning huge ranges)
+            if ($prefixLength -ge 24 -and $prefixLength -le 32) {
+                try {
+                    # Generate IPs to scan (sample first 10 and last 10 IPs, plus common hypervisor IPs)
+                    $ipsToScan = Get-SubnetIPsToScan -Subnet $subnetIP -PrefixLength $prefixLength
+                    $subnetIPs += $ipsToScan
+                    Write-Host "        [+] Will scan $($ipsToScan.Count) IPs from subnet $subnetIP/$prefixLength" -ForegroundColor DarkGray
+                } catch {
+                    Write-Host "        [-] Error processing subnet $subnet : $_" -ForegroundColor DarkGray
+                }
+            } else {
+                Write-Host "        [-] Skipping subnet $subnetIP/$prefixLength (too large, only scanning /24 or smaller)" -ForegroundColor DarkGray
             }
         }
     }
     
     # Also scan common hypervisor management IP ranges if no subnets found
     if ($subnetIPs.Count -eq 0) {
-        Write-Host "    [*] No AD subnets found, scanning common management IP ranges..." -ForegroundColor DarkGray
-        # Common management ranges: .1, .10, .100, .200, .254
+        Write-Host "    [*] No AD subnets found, using local network adapter information..." -ForegroundColor DarkGray
         $localSubnet = Get-LocalSubnet
         if ($localSubnet) {
+            Write-Host "      [+] Detected local subnet: $localSubnet.0/24" -ForegroundColor DarkGray
+            # Common management ranges: .1, .10, .50, .100, .150, .200, .254
             $commonIPs = @(
                 "$localSubnet.1",
                 "$localSubnet.10",
+                "$localSubnet.50",
                 "$localSubnet.100",
+                "$localSubnet.150",
                 "$localSubnet.200",
                 "$localSubnet.254"
             )
             $subnetIPs += $commonIPs
+            Write-Host "      [+] Will scan $($commonIPs.Count) common management IPs" -ForegroundColor DarkGray
+        } else {
+            Write-Host "      [-] Could not determine local subnet" -ForegroundColor DarkGray
         }
+    } else {
+        Write-Host "    [+] Found $($subnetIPs.Count) IPs to scan from AD subnets" -ForegroundColor DarkGray
     }
     
     # Scan discovered IPs for virtualization

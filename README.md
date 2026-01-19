@@ -50,11 +50,17 @@ If you've cloned the repository:
 # Run locally
 .\Invoke-ADDiscovery.ps1
 
+# Run with nmap for enhanced virtualization details (requires nmap installed)
+.\Invoke-ADDiscovery.ps1 -UseNmap
+
 # Save results to variable
 $results = .\Invoke-ADDiscovery.ps1
 
 # Export results to JSON file
 .\Invoke-ADDiscovery.ps1 | ConvertTo-Json -Depth 10 | Out-File discovery-results.json
+
+# With nmap and JSON output
+.\Invoke-ADDiscovery.ps1 -UseNmap -OutputJson | Out-File discovery-results.json
 ```
 
 ## Requirements
@@ -64,6 +70,7 @@ $results = .\Invoke-ADDiscovery.ps1
 - Active Directory PowerShell module (usually pre-installed on domain controllers)
 - Appropriate permissions to query AD and remote servers
 - Internet access (for GitHub download)
+- **Optional**: Nmap (for enhanced virtualization details with `-UseNmap` parameter)
 
 ## Detection Methods for Entra AD Connect
 
@@ -96,6 +103,17 @@ Supported platforms:
 - Docker
 - AWS EC2
 - Microsoft Azure VM
+
+### Optional Nmap Integration
+
+When using the `-UseNmap` parameter, the script will perform additional port scanning and service detection on discovered virtualization platforms:
+
+- **Port Scanning**: Scans platform-specific ports (ESXi: 443, 902, 5988; Hyper-V: 5985, 5986; etc.)
+- **Service Version Detection**: Identifies running services and their versions
+- **OS Fingerprinting**: Attempts to identify OS details via nmap
+- **Enhanced Details**: Provides additional network information in the results
+
+**Note**: Nmap must be installed and accessible in PATH or standard installation directories for this feature to work. The script will gracefully skip nmap scanning if it's not available.
 
 ## Output
 

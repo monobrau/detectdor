@@ -19,7 +19,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$false)]
-    [switch]$OutputJson
+    [switch]$OutputJson,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$UseNmap
 )
 
 # Ensure TLS 1.2 for GitHub connections
@@ -1174,6 +1177,15 @@ function Get-VirtualizationPlatforms {
                     $vmInfo.Platform += $hypervisorType
                 }
             }
+            
+            # Optional: Use nmap for additional details if requested and available
+            if ($UseNmap -and ($isHypervisorHost -or $vmInfo.IsVirtual)) {
+                $nmapDetails = Get-NmapDetails -Server $server -Platform $vmInfo.Platform
+                if ($nmapDetails) {
+                    $vmInfo.Details.NmapScan = $nmapDetails
+                }
+            }
+            
             $Results.Virtualization += $vmInfo
             $platformStr = if ($vmInfo.Platform.Count -gt 0) { $vmInfo.Platform -join ', ' } else { "Unknown" }
             $hostType = if ($isHypervisorHost) { " (Hypervisor Host)" } else { "" }
@@ -1188,6 +1200,140 @@ function Get-VirtualizationPlatforms {
         $hypervisorCount = ($Results.Virtualization | Where-Object { $_.Details.HypervisorHost -eq $true }).Count
         Write-Host "  [+] Total virtualized systems: $($Results.Virtualization.Count) (VMs: $vmCount, Hypervisor Hosts: $hypervisorCount)" -ForegroundColor Green
     }
+}
+
+# Function to get nmap details for virtualization platforms
+function Get-NmapDetails {
+    param(
+        [string]$Server,
+        [array]$Platform
+    )
+    
+    # Check if nmap is available
+    $nmapPath = $null
+    try {
+        $nmapPath = Get-Command nmap -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+        if (-not $nmapPath) {
+            # Try common installation paths
+            $commonPaths = @(
+                "C:\Program Files (x86)\Nmap\nmap.exe",
+                "C:\Program Files\Nmap\nmap.exe",
+                "$env:ProgramFiles\Nmap\nmap.exe",
+                "$env:ProgramFiles(x86)\Nmap\nmap.exe"
+            )
+            foreach ($path in $commonPaths) {
+                if (Test-Path $path) {
+                    $nmapPath = $path
+                    break
+                }
+            }
+        }
+    } catch {
+        return $null
+    }
+    
+    if (-not $nmapPath) {
+        return $null
+    }
+    
+    # Determine ports to scan based on platform
+    $portsToScan = @()
+    foreach ($p in $Platform) {
+        switch ($p) {
+            "VMware ESXi" {
+                $portsToScan += "443,902,5988,5989"  # HTTPS, ESXi, CIM, CIM SSL
+            }
+            "VMware vCenter" {
+                $portsToScan += "443,902,8080,8443"  # HTTPS, ESXi, HTTP, HTTPS alt
+            }
+            "Hyper-V Host" {
+                $portsToScan += "5985,5986,135,445"  # WinRM HTTP/HTTPS, RPC, SMB
+            }
+            "Citrix XenServer" {
+                $portsToScan += "80,443,5900"  # HTTP, HTTPS, VNC
+            }
+            default {
+                # Default virtualization ports
+                $portsToScan += "443,5985,5986"
+            }
+        }
+    }
+    
+    # Remove duplicates and join
+    $uniquePorts = ($portsToScan | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Sort-Object -Unique) -join ','
+    
+    if (-not $uniquePorts) {
+        $uniquePorts = "443,5985,5986,902"  # Default ports
+    }
+    
+    try {
+        Write-Host "    [*] Running nmap scan on $server (ports: $uniquePorts)..." -ForegroundColor DarkGray
+        
+        # Run nmap with version detection and service detection
+        $nmapArgs = @(
+            "-p", $uniquePorts
+            "-sV"  # Version detection
+            "-sC"  # Default scripts
+            "--open"  # Only show open ports
+            "-T4"  # Aggressive timing
+            "--host-timeout", "10s"  # Timeout per host
+            $server
+        )
+        
+        $nmapOutput = & $nmapPath $nmapArgs 2>&1
+        
+        # Parse nmap output
+        $nmapResult = @{
+            Ports = @()
+            Services = @()
+            OS = $null
+            RawOutput = ($nmapOutput -join "`n")
+        }
+        
+        $currentPort = $null
+        foreach ($line in $nmapOutput) {
+            # Parse port lines: "443/tcp   open  https     VMware ESXi httpd"
+            if ($line -match '(\d+)/(tcp|udp)\s+open\s+(\S+)\s*(.*)') {
+                $port = $matches[1]
+                $protocol = $matches[2]
+                $service = $matches[3]
+                $version = $matches[4].Trim()
+                
+                $nmapResult.Ports += @{
+                    Port = $port
+                    Protocol = $protocol
+                    State = "open"
+                    Service = $service
+                    Version = $version
+                }
+                
+                if ($version) {
+                    $nmapResult.Services += "$service ($port/$protocol): $version"
+                } else {
+                    $nmapResult.Services += "$service ($port/$protocol)"
+                }
+            }
+            # Parse OS detection: "OS details: VMware ESXi 6.7.0"
+            elseif ($line -match 'OS details:\s*(.+)') {
+                $nmapResult.OS = $matches[1].Trim()
+            }
+            # Parse OS CPE: "OS CPE: cpe:/o:vmware:esxi:6.7"
+            elseif ($line -match 'OS CPE:\s*(.+)') {
+                if (-not $nmapResult.OS) {
+                    $nmapResult.OS = $matches[1].Trim()
+                }
+            }
+        }
+        
+        if ($nmapResult.Ports.Count -gt 0) {
+            Write-Host "    [+] Nmap found $($nmapResult.Ports.Count) open port(s)" -ForegroundColor DarkGreen
+            return $nmapResult
+        }
+    } catch {
+        Write-Host "    [-] Nmap scan failed: $_" -ForegroundColor DarkGray
+    }
+    
+    return $null
 }
 
 # Main execution

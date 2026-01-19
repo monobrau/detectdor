@@ -650,6 +650,10 @@ function Get-CertificateAuthorities {
 
 # Function to discover Virtualization Platforms
 function Get-VirtualizationPlatforms {
+    param(
+        [switch]$UseNmap
+    )
+    
     Write-Host "`n[*] Discovering Virtualization Platforms..." -ForegroundColor Yellow
     
     # Helper function to execute CIM queries with timeout (optimized for speed)
@@ -1367,7 +1371,7 @@ function Invoke-ADDiscovery {
         Get-SQLServers
         Get-FileServers
         Get-CertificateAuthorities
-        Get-VirtualizationPlatforms
+        Get-VirtualizationPlatforms -UseNmap:$UseNmap
     
     # Output summary
     Write-Host "`n=== Discovery Summary ===" -ForegroundColor Cyan

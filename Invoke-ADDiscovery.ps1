@@ -17,7 +17,10 @@
 #>
 
 [CmdletBinding()]
-param()
+param(
+    [Parameter(Mandatory=$false)]
+    [switch]$OutputJson
+)
 
 # Ensure TLS 1.2 for GitHub connections
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -346,9 +349,11 @@ try {
     Write-Host "DNS Servers: $($Results.DNSServers.Count)" -ForegroundColor White
     Write-Host "Entra AD Connect Installations: $($Results.EntraADConnect.Count)" -ForegroundColor White
     
-    # Output detailed results as JSON
-    Write-Host "`n=== Detailed Results (JSON) ===" -ForegroundColor Cyan
-    $Results | ConvertTo-Json -Depth 20
+    # Output detailed results as JSON only if requested
+    if ($OutputJson) {
+        Write-Host "`n=== Detailed Results (JSON) ===" -ForegroundColor Cyan
+        $Results | ConvertTo-Json -Depth 20
+    }
     
     # Return results object
     return $Results

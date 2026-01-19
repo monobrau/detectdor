@@ -649,6 +649,60 @@ function Get-CertificateAuthorities {
 function Get-VirtualizationPlatforms {
     Write-Host "`n[*] Discovering Virtualization Platforms..." -ForegroundColor Yellow
     
+    # Helper function to execute CIM queries with timeout (optimized for speed)
+    function Invoke-CimQueryWithTimeout {
+        param(
+            [string]$ComputerName,
+            [string]$ClassName,
+            [string]$Filter = $null,
+            [int]$TimeoutSeconds = 2
+        )
+        
+        # Skip localhost - use direct calls
+        if ($ComputerName -eq $env:COMPUTERNAME -or $ComputerName -eq 'localhost' -or $ComputerName -eq '.') {
+            try {
+                if ($Filter) {
+                    return Get-CimInstance -ClassName $ClassName -Filter $Filter -ErrorAction SilentlyContinue
+                } else {
+                    return Get-CimInstance -ClassName $ClassName -ErrorAction SilentlyContinue
+                }
+            } catch {
+                return $null
+            }
+        }
+        
+        # For remote hosts, use job with timeout to prevent hanging
+        $queryJob = Start-Job -ScriptBlock {
+            param($compName, $class, $filt, $timeout)
+            try {
+                $sessOpt = New-CimSessionOption -OperationTimeoutSec $timeout -TimeoutSec $timeout
+                $sess = New-CimSession -ComputerName $compName -SessionOption $sessOpt -ErrorAction SilentlyContinue
+                if ($sess) {
+                    if ($filt) {
+                        $res = Get-CimInstance -CimSession $sess -ClassName $class -Filter $filt -ErrorAction SilentlyContinue
+                    } else {
+                        $res = Get-CimInstance -CimSession $sess -ClassName $class -ErrorAction SilentlyContinue
+                    }
+                    Remove-CimSession -CimSession $sess -ErrorAction SilentlyContinue
+                    return $res
+                }
+            } catch {
+                return $null
+            }
+            return $null
+        } -ArgumentList $ComputerName, $ClassName, $Filter, $TimeoutSeconds
+        
+        try {
+            $result = Wait-Job -Job $queryJob -Timeout ($TimeoutSeconds + 1) | Receive-Job
+            return $result
+        } catch {
+            return $null
+        } finally {
+            Stop-Job -Job $queryJob -ErrorAction SilentlyContinue
+            Remove-Job -Job $queryJob -ErrorAction SilentlyContinue
+        }
+    }
+    
     $serversToCheck = @()
     
     # Add all discovered servers
@@ -696,9 +750,9 @@ function Get-VirtualizationPlatforms {
                 $serverName = $serverObj.Properties['name'][0]
             }
             if ($serverName -and $serverName -notin $serversToCheck) {
-                # Quick check for Hyper-V service
+                # Quick check for Hyper-V service with fast timeout
                 try {
-                    $hypervService = Get-CimInstance -ComputerName $serverName -ClassName Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue
+                    $hypervService = Invoke-CimQueryWithTimeout -ComputerName $serverName -ClassName Win32_Service -Filter "Name='vmms'" -TimeoutSeconds 1
                     if ($hypervService) {
                         $serversToCheck += $serverName
                         Write-Host "    [+] Found Hyper-V host: $serverName" -ForegroundColor DarkGray
@@ -711,6 +765,29 @@ function Get-VirtualizationPlatforms {
     foreach ($server in $serversToCheck) {
         Write-Host "  [*] Checking $server for virtualization..." -ForegroundColor DarkGray
         
+        # Quick connectivity check - skip if host is unreachable (very fast timeout)
+        if ($server -ne $env:COMPUTERNAME) {
+            try {
+                # Use async ping with very short timeout
+                $pingJob = Start-Job -ScriptBlock {
+                    param($hostName)
+                    Test-Connection -ComputerName $hostName -Count 1 -Quiet -ErrorAction SilentlyContinue
+                } -ArgumentList $server
+                
+                $pingResult = Wait-Job -Job $pingJob -Timeout 1 | Receive-Job
+                Stop-Job -Job $pingJob -ErrorAction SilentlyContinue
+                Remove-Job -Job $pingJob -ErrorAction SilentlyContinue
+                
+                if (-not $pingResult) {
+                    Write-Host "    [-] $server is unreachable, skipping..." -ForegroundColor DarkGray
+                    continue
+                }
+            } catch {
+                Write-Host "    [-] $server is unreachable, skipping..." -ForegroundColor DarkGray
+                continue
+            }
+        }
+        
         $vmInfo = @{
             Server = $server
             IsVirtual = $false
@@ -718,10 +795,13 @@ function Get-VirtualizationPlatforms {
             Details = @{}
         }
         
-        # Method 1: Check BIOS/System Manufacturer (most reliable)
+        # Method 1: Check BIOS/System Manufacturer (most reliable) - with fast timeout
+        # This is the fastest check, if it fails quickly, skip other checks
+        $quickCheckPassed = $false
         try {
-            $computerSystem = Get-CimInstance -ComputerName $server -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+            $computerSystem = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_ComputerSystem -TimeoutSeconds 2
             if ($computerSystem) {
+                $quickCheckPassed = $true
                 $manufacturer = $computerSystem.Manufacturer
                 $model = $computerSystem.Model
                 
@@ -783,9 +863,15 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Method 2: Check for virtualization services
+        # If quick check failed (host unreachable), skip remaining checks
+        if ($server -ne $env:COMPUTERNAME -and -not $quickCheckPassed) {
+            Write-Host "    [-] $server not accessible via CIM, skipping detailed checks..." -ForegroundColor DarkGray
+            continue
+        }
+        
+        # Method 2: Check for virtualization services - with fast timeout
         try {
-            $services = Get-CimInstance -ComputerName $server -ClassName Win32_Service -ErrorAction SilentlyContinue
+            $services = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_Service -TimeoutSeconds 2
             if ($services) {
                 # VMware Tools
                 $vmwareServices = $services | Where-Object { $_.Name -match 'VMTools|vmware|VMware' -or $_.DisplayName -match 'VMware' }
@@ -849,9 +935,9 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Method 3: Check network adapters for virtualization signatures
+        # Method 3: Check network adapters for virtualization signatures - with fast timeout
         try {
-            $adapters = Get-CimInstance -ComputerName $server -ClassName Win32_NetworkAdapter -ErrorAction SilentlyContinue
+            $adapters = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_NetworkAdapter -TimeoutSeconds 2
             if ($adapters) {
                 # VMware network adapters
                 $vmwareAdapters = $adapters | Where-Object { $_.Name -match 'VMware|vmxnet' }
@@ -909,31 +995,54 @@ function Get-VirtualizationPlatforms {
                     }
                 }
             } else {
-                # Remote registry check
+                # Remote registry check with timeout
                 try {
-                    $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $server)
-                    
-                    # VMware
-                    $vmwareKey = $reg.OpenSubKey('SOFTWARE\VMware, Inc.\VMware Tools')
-                    if ($vmwareKey) {
-                        $vmInfo.IsVirtual = $true
-                        if (-not ($vmInfo.Platform -contains "VMware")) {
-                            $vmInfo.Platform += "VMware"
+                    # Use a job with timeout for registry access
+                    $regJob = Start-Job -ScriptBlock {
+                        param($serverName)
+                        try {
+                            $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $serverName)
+                            $result = @{}
+                            
+                            # VMware
+                            $vmwareKey = $reg.OpenSubKey('SOFTWARE\VMware, Inc.\VMware Tools')
+                            if ($vmwareKey) {
+                                $result.VMware = $true
+                                $vmwareKey.Close()
+                            }
+                            
+                            # VirtualBox
+                            $vboxKey = $reg.OpenSubKey('SOFTWARE\Oracle\VirtualBox Guest Additions')
+                            if ($vboxKey) {
+                                $result.VirtualBox = $true
+                                $vboxKey.Close()
+                            }
+                            
+                            $reg.Close()
+                            return $result
+                        } catch {
+                            return $null
                         }
-                        $vmwareKey.Close()
-                    }
+                    } -ArgumentList $server
                     
-                    # VirtualBox
-                    $vboxKey = $reg.OpenSubKey('SOFTWARE\Oracle\VirtualBox Guest Additions')
-                    if ($vboxKey) {
-                        $vmInfo.IsVirtual = $true
-                        if (-not ($vmInfo.Platform -contains "VirtualBox")) {
-                            $vmInfo.Platform += "VirtualBox"
+                    $regResult = Wait-Job -Job $regJob -Timeout 3 | Receive-Job
+                    Stop-Job -Job $regJob -ErrorAction SilentlyContinue
+                    Remove-Job -Job $regJob -ErrorAction SilentlyContinue
+                    
+                    if ($regResult) {
+                        if ($regResult.VMware) {
+                            $vmInfo.IsVirtual = $true
+                            if (-not ($vmInfo.Platform -contains "VMware")) {
+                                $vmInfo.Platform += "VMware"
+                            }
                         }
-                        $vboxKey.Close()
+                        if ($regResult.VirtualBox) {
+                            $vmInfo.IsVirtual = $true
+                            if (-not ($vmInfo.Platform -contains "VirtualBox")) {
+                                $vmInfo.Platform += "VirtualBox"
+                            }
+                        }
                     }
-                    
-                    $reg.Close()
                 } catch {}
             }
         } catch {}
@@ -967,9 +1076,9 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Method 6: Check disk controllers for virtualization signatures
+        # Method 6: Check disk controllers for virtualization signatures - with fast timeout
         try {
-            $diskControllers = Get-CimInstance -ComputerName $server -ClassName Win32_SCSIController -ErrorAction SilentlyContinue
+            $diskControllers = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_SCSIController -TimeoutSeconds 2
             if ($diskControllers) {
                 # VMware SCSI controllers
                 $vmwareControllers = $diskControllers | Where-Object { $_.Name -match 'VMware|LSI Logic' }
@@ -991,9 +1100,9 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Method 7: Check for Docker (containerization)
+        # Method 7: Check for Docker (containerization) - with fast timeout
         try {
-            $dockerService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='com.docker.service' OR Name='docker'" -ErrorAction SilentlyContinue
+            $dockerService = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_Service -Filter "Name='com.docker.service' OR Name='docker'" -TimeoutSeconds 2
             if ($dockerService) {
                 $vmInfo.IsVirtual = $true
                 if (-not ($vmInfo.Platform -contains "Docker")) {
@@ -1010,10 +1119,10 @@ function Get-VirtualizationPlatforms {
         $isHypervisorHost = $false
         $hypervisorType = $null
         
-        # Check for VMware ESXi/vCenter
+        # Check for VMware ESXi/vCenter - with fast timeout
         try {
             # ESXi hosts typically have SSH or hostd service
-            $vmwareHostd = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='hostd' OR Name='vmware-hostd'" -ErrorAction SilentlyContinue
+            $vmwareHostd = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_Service -Filter "Name='hostd' OR Name='vmware-hostd'" -TimeoutSeconds 2
             if ($vmwareHostd) {
                 $isHypervisorHost = $true
                 $hypervisorType = "VMware ESXi"
@@ -1022,7 +1131,7 @@ function Get-VirtualizationPlatforms {
             }
             
             # Check for vCenter (vpxd service)
-            $vcenterService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='vpxd' OR DisplayName LIKE '%vCenter%'" -ErrorAction SilentlyContinue
+            $vcenterService = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_Service -Filter "Name='vpxd' OR DisplayName LIKE '%vCenter%'" -TimeoutSeconds 2
             if ($vcenterService) {
                 $isHypervisorHost = $true
                 $hypervisorType = "VMware vCenter"
@@ -1031,9 +1140,9 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Check for Hyper-V host (vmms service)
+        # Check for Hyper-V host (vmms service) - with fast timeout
         try {
-            $vmmsService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='vmms'" -ErrorAction SilentlyContinue
+            $vmmsService = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_Service -Filter "Name='vmms'" -TimeoutSeconds 2
             if ($vmmsService) {
                 $isHypervisorHost = $true
                 $hypervisorType = "Hyper-V Host"
@@ -1046,9 +1155,9 @@ function Get-VirtualizationPlatforms {
             }
         } catch {}
         
-        # Check for Citrix XenServer
+        # Check for Citrix XenServer - with fast timeout
         try {
-            $xenService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name LIKE '%xen%' OR DisplayName LIKE '%XenServer%'" -ErrorAction SilentlyContinue
+            $xenService = Invoke-CimQueryWithTimeout -ComputerName $server -ClassName Win32_Service -Filter "Name LIKE '%xen%' OR DisplayName LIKE '%XenServer%'" -TimeoutSeconds 2
             if ($xenService) {
                 $isHypervisorHost = $true
                 $hypervisorType = "Citrix XenServer"

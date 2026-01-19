@@ -1,0 +1,15 @@
+GitHub Execution One-Liner
+==========================
+
+Replace USERNAME, REPO, and BRANCH with your GitHub repository details:
+
+iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content
+
+Example:
+iex (iwr -UseBasicParsing https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1).Content
+
+To save results:
+$results = iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content
+
+To export to JSON:
+iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content | ConvertTo-Json -Depth 10 | Out-File results.json

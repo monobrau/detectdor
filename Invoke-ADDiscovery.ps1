@@ -176,9 +176,39 @@ function Get-EntraADConnect {
     # Also check current machine
     $serversToCheck += $env:COMPUTERNAME
     
+    # Quick check first - if nothing found, skip detailed checks
+    $quickCheckFound = $false
+    
     foreach ($server in $serversToCheck) {
-        Write-Host "  [*] Checking $server..." -ForegroundColor Gray
+        # Quick check: ADSync service (fastest method)
+        try {
+            $adsyncService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='ADSync'" -ErrorAction SilentlyContinue
+            if ($adsyncService) {
+                $quickCheckFound = $true
+                break
+            }
+        } catch {}
         
+        # Quick check: Registry (local only, fast)
+        try {
+            if ($server -eq $env:COMPUTERNAME) {
+                $regPath = "HKLM:\SOFTWARE\Microsoft\Azure AD Connect"
+                if (Test-Path $regPath) {
+                    $quickCheckFound = $true
+                    break
+                }
+            }
+        } catch {}
+    }
+    
+    # If quick check found nothing, skip detailed checks
+    if (-not $quickCheckFound) {
+        Write-Host "  [-] No Entra AD Connect installations found (skipped detailed checks)" -ForegroundColor Gray
+        return
+    }
+    
+    # Detailed checks only if quick check found something
+    foreach ($server in $serversToCheck) {
         $entraInfo = @{
             Server = $server
             Found = $false

@@ -42,6 +42,7 @@ $Results = @{
     SQLServers = @()
     FileServers = @()
     CertificateAuthorities = @()
+    Virtualization = @()
     Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 }
 
@@ -644,6 +645,333 @@ function Get-CertificateAuthorities {
     }
 }
 
+# Function to discover Virtualization Platforms
+function Get-VirtualizationPlatforms {
+    Write-Host "`n[*] Discovering Virtualization Platforms..." -ForegroundColor Yellow
+    
+    $serversToCheck = @()
+    
+    # Add all discovered servers
+    foreach ($dc in $Results.DomainControllers) {
+        $serversToCheck += $dc.Name
+    }
+    
+    # Also check current machine
+    $serversToCheck += $env:COMPUTERNAME
+    
+    foreach ($server in $serversToCheck) {
+        Write-Host "  [*] Checking $server for virtualization..." -ForegroundColor DarkGray
+        
+        $vmInfo = @{
+            Server = $server
+            IsVirtual = $false
+            Platform = @()
+            Details = @{}
+        }
+        
+        # Method 1: Check BIOS/System Manufacturer (most reliable)
+        try {
+            $computerSystem = Get-CimInstance -ComputerName $server -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($computerSystem) {
+                $manufacturer = $computerSystem.Manufacturer
+                $model = $computerSystem.Model
+                
+                # VMware detection
+                if ($manufacturer -match 'VMware|VMware, Inc.' -or $model -match 'VMware') {
+                    $vmInfo.IsVirtual = $true
+                    $vmInfo.Platform += "VMware"
+                    $vmInfo.Details.Manufacturer = $manufacturer
+                    $vmInfo.Details.Model = $model
+                }
+                
+                # Microsoft Hyper-V detection
+                if ($manufacturer -match 'Microsoft Corporation' -and $model -match 'Virtual Machine') {
+                    $vmInfo.IsVirtual = $true
+                    $vmInfo.Platform += "Hyper-V"
+                    $vmInfo.Details.Manufacturer = $manufacturer
+                    $vmInfo.Details.Model = $model
+                }
+                
+                # Citrix XenServer detection
+                if ($manufacturer -match 'Xen' -or $model -match 'Xen') {
+                    $vmInfo.IsVirtual = $true
+                    $vmInfo.Platform += "Citrix XenServer"
+                    $vmInfo.Details.Manufacturer = $manufacturer
+                    $vmInfo.Details.Model = $model
+                }
+                
+                # VirtualBox detection
+                if ($manufacturer -match 'innotek|Oracle' -or $model -match 'VirtualBox') {
+                    $vmInfo.IsVirtual = $true
+                    $vmInfo.Platform += "VirtualBox"
+                    $vmInfo.Details.Manufacturer = $manufacturer
+                    $vmInfo.Details.Model = $model
+                }
+                
+                # QEMU/KVM detection
+                if ($manufacturer -match 'QEMU' -or $model -match 'QEMU|KVM') {
+                    $vmInfo.IsVirtual = $true
+                    $vmInfo.Platform += "QEMU/KVM"
+                    $vmInfo.Details.Manufacturer = $manufacturer
+                    $vmInfo.Details.Model = $model
+                }
+                
+                # AWS EC2 detection
+                if ($model -match 'Amazon EC2|ec2') {
+                    $vmInfo.IsVirtual = $true
+                    $vmInfo.Platform += "AWS EC2"
+                    $vmInfo.Details.Manufacturer = $manufacturer
+                    $vmInfo.Details.Model = $model
+                }
+                
+                # Azure VM detection
+                if ($model -match 'Virtual Machine' -and $manufacturer -match 'Microsoft') {
+                    # Could be Hyper-V or Azure, check further
+                    if (-not ($vmInfo.Platform -contains "Hyper-V")) {
+                        $vmInfo.Platform += "Azure VM"
+                    }
+                }
+            }
+        } catch {}
+        
+        # Method 2: Check for virtualization services
+        try {
+            $services = Get-CimInstance -ComputerName $server -ClassName Win32_Service -ErrorAction SilentlyContinue
+            if ($services) {
+                # VMware Tools
+                $vmwareServices = $services | Where-Object { $_.Name -match 'VMTools|vmware|VMware' -or $_.DisplayName -match 'VMware' }
+                if ($vmwareServices) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VMware")) {
+                        $vmInfo.Platform += "VMware"
+                    }
+                    $vmInfo.Details.VMwareServices = @()
+                    foreach ($svc in $vmwareServices) {
+                        $vmInfo.Details.VMwareServices += @{
+                            Name = $svc.Name
+                            DisplayName = $svc.DisplayName
+                            Status = $svc.State
+                        }
+                    }
+                }
+                
+                # Hyper-V Integration Services
+                $hypervServices = $services | Where-Object { $_.Name -match 'vmickvpexchange|vmicheartbeat|vmicshutdown|vmictimesync|vmicvss' }
+                if ($hypervServices) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "Hyper-V")) {
+                        $vmInfo.Platform += "Hyper-V"
+                    }
+                    $vmInfo.Details.HyperVServices = @()
+                    foreach ($svc in $hypervServices) {
+                        $vmInfo.Details.HyperVServices += @{
+                            Name = $svc.Name
+                            DisplayName = $svc.DisplayName
+                            Status = $svc.State
+                        }
+                    }
+                }
+                
+                # VirtualBox Guest Additions
+                $vboxServices = $services | Where-Object { $_.Name -match 'VBoxService|VBoxGuest' }
+                if ($vboxServices) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VirtualBox")) {
+                        $vmInfo.Platform += "VirtualBox"
+                    }
+                    $vmInfo.Details.VirtualBoxServices = @()
+                    foreach ($svc in $vboxServices) {
+                        $vmInfo.Details.VirtualBoxServices += @{
+                            Name = $svc.Name
+                            DisplayName = $svc.DisplayName
+                            Status = $svc.State
+                        }
+                    }
+                }
+                
+                # Citrix XenServer Tools
+                $xenServices = $services | Where-Object { $_.Name -match 'xenservice|Xen' }
+                if ($xenServices) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "Citrix XenServer")) {
+                        $vmInfo.Platform += "Citrix XenServer"
+                    }
+                }
+            }
+        } catch {}
+        
+        # Method 3: Check network adapters for virtualization signatures
+        try {
+            $adapters = Get-CimInstance -ComputerName $server -ClassName Win32_NetworkAdapter -ErrorAction SilentlyContinue
+            if ($adapters) {
+                # VMware network adapters
+                $vmwareAdapters = $adapters | Where-Object { $_.Name -match 'VMware|vmxnet' }
+                if ($vmwareAdapters) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VMware")) {
+                        $vmInfo.Platform += "VMware"
+                    }
+                }
+                
+                # Hyper-V network adapters
+                $hypervAdapters = $adapters | Where-Object { $_.Name -match 'Hyper-V|vEthernet' }
+                if ($hypervAdapters) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "Hyper-V")) {
+                        $vmInfo.Platform += "Hyper-V"
+                    }
+                }
+                
+                # VirtualBox network adapters
+                $vboxAdapters = $adapters | Where-Object { $_.Name -match 'VirtualBox' }
+                if ($vboxAdapters) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VirtualBox")) {
+                        $vmInfo.Platform += "VirtualBox"
+                    }
+                }
+            }
+        } catch {}
+        
+        # Method 4: Check registry for virtualization indicators
+        try {
+            if ($server -eq $env:COMPUTERNAME) {
+                # VMware registry keys
+                $vmwareRegPaths = @(
+                    "HKLM:\SOFTWARE\VMware, Inc.\VMware Tools",
+                    "HKLM:\SYSTEM\CurrentControlSet\Services\vmware"
+                )
+                foreach ($regPath in $vmwareRegPaths) {
+                    if (Test-Path $regPath) {
+                        $vmInfo.IsVirtual = $true
+                        if (-not ($vmInfo.Platform -contains "VMware")) {
+                            $vmInfo.Platform += "VMware"
+                        }
+                        break
+                    }
+                }
+                
+                # VirtualBox registry keys
+                $vboxRegPath = "HKLM:\SOFTWARE\Oracle\VirtualBox Guest Additions"
+                if (Test-Path $vboxRegPath) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VirtualBox")) {
+                        $vmInfo.Platform += "VirtualBox"
+                    }
+                }
+            } else {
+                # Remote registry check
+                try {
+                    $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $server)
+                    
+                    # VMware
+                    $vmwareKey = $reg.OpenSubKey('SOFTWARE\VMware, Inc.\VMware Tools')
+                    if ($vmwareKey) {
+                        $vmInfo.IsVirtual = $true
+                        if (-not ($vmInfo.Platform -contains "VMware")) {
+                            $vmInfo.Platform += "VMware"
+                        }
+                        $vmwareKey.Close()
+                    }
+                    
+                    # VirtualBox
+                    $vboxKey = $reg.OpenSubKey('SOFTWARE\Oracle\VirtualBox Guest Additions')
+                    if ($vboxKey) {
+                        $vmInfo.IsVirtual = $true
+                        if (-not ($vmInfo.Platform -contains "VirtualBox")) {
+                            $vmInfo.Platform += "VirtualBox"
+                        }
+                        $vboxKey.Close()
+                    }
+                    
+                    $reg.Close()
+                } catch {}
+            }
+        } catch {}
+        
+        # Method 5: Check for cloud-specific indicators
+        try {
+            # AWS EC2 metadata service check (if accessible)
+            if ($server -eq $env:COMPUTERNAME) {
+                try {
+                    $awsMetadata = Invoke-WebRequest -Uri "http://169.254.169.254/latest/meta-data/instance-id" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
+                    if ($awsMetadata.StatusCode -eq 200) {
+                        $vmInfo.IsVirtual = $true
+                        if (-not ($vmInfo.Platform -contains "AWS EC2")) {
+                            $vmInfo.Platform += "AWS EC2"
+                        }
+                        $vmInfo.Details.AWSInstanceId = $awsMetadata.Content
+                    }
+                } catch {}
+                
+                # Azure VM metadata check
+                try {
+                    $azureMetadata = Invoke-WebRequest -Uri "http://169.254.169.254/metadata/instance?api-version=2021-02-01" -Headers @{"Metadata"="true"} -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
+                    if ($azureMetadata.StatusCode -eq 200) {
+                        $vmInfo.IsVirtual = $true
+                        if (-not ($vmInfo.Platform -contains "Azure VM")) {
+                            $vmInfo.Platform += "Azure VM"
+                        }
+                        $vmInfo.Details.AzureMetadata = "Present"
+                    }
+                } catch {}
+            }
+        } catch {}
+        
+        # Method 6: Check disk controllers for virtualization signatures
+        try {
+            $diskControllers = Get-CimInstance -ComputerName $server -ClassName Win32_SCSIController -ErrorAction SilentlyContinue
+            if ($diskControllers) {
+                # VMware SCSI controllers
+                $vmwareControllers = $diskControllers | Where-Object { $_.Name -match 'VMware|LSI Logic' }
+                if ($vmwareControllers) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VMware")) {
+                        $vmInfo.Platform += "VMware"
+                    }
+                }
+                
+                # VirtualBox controllers
+                $vboxControllers = $diskControllers | Where-Object { $_.Name -match 'VirtualBox' }
+                if ($vboxControllers) {
+                    $vmInfo.IsVirtual = $true
+                    if (-not ($vmInfo.Platform -contains "VirtualBox")) {
+                        $vmInfo.Platform += "VirtualBox"
+                    }
+                }
+            }
+        } catch {}
+        
+        # Method 7: Check for Docker (containerization)
+        try {
+            $dockerService = Get-CimInstance -ComputerName $server -ClassName Win32_Service -Filter "Name='com.docker.service' OR Name='docker'" -ErrorAction SilentlyContinue
+            if ($dockerService) {
+                $vmInfo.IsVirtual = $true
+                if (-not ($vmInfo.Platform -contains "Docker")) {
+                    $vmInfo.Platform += "Docker"
+                }
+                $vmInfo.Details.DockerService = @{
+                    Status = $dockerService.State
+                    StartMode = $dockerService.StartMode
+                }
+            }
+        } catch {}
+        
+        # Only add to results if virtualization was detected
+        if ($vmInfo.IsVirtual) {
+            $Results.Virtualization += $vmInfo
+            $platformStr = if ($vmInfo.Platform.Count -gt 0) { $vmInfo.Platform -join ', ' } else { "Unknown" }
+            Write-Host "  [+] Virtualization detected on $server : $platformStr" -ForegroundColor Green
+        }
+    }
+    
+    if ($Results.Virtualization.Count -eq 0) {
+        Write-Host "  [-] No virtualization platforms detected" -ForegroundColor Gray
+    } else {
+        Write-Host "  [+] Total virtualized systems: $($Results.Virtualization.Count)" -ForegroundColor Green
+    }
+}
+
 # Main execution
 try {
     Get-DomainControllers
@@ -658,6 +986,7 @@ try {
     Get-SQLServers
     Get-FileServers
     Get-CertificateAuthorities
+    Get-VirtualizationPlatforms
     
     # Output summary
     Write-Host "`n=== Discovery Summary ===" -ForegroundColor Cyan
@@ -671,6 +1000,7 @@ try {
     Write-Host "SQL Servers: $($Results.SQLServers.Count)" -ForegroundColor White
     Write-Host "File Servers/DFS: $($Results.FileServers.Count)" -ForegroundColor White
     Write-Host "Certificate Authorities: $($Results.CertificateAuthorities.Count)" -ForegroundColor White
+    Write-Host "Virtualized Systems: $($Results.Virtualization.Count)" -ForegroundColor White
     
     # Output detailed results as JSON only if requested
     if ($OutputJson) {

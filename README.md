@@ -30,6 +30,7 @@ iex (iwr -UseBasicParsing https://raw.githubusercontent.com/yourusername/detectd
 - **DHCP Server Discovery**: Finds DHCP servers via AD queries and service checks
 - **DNS Server Discovery**: Identifies DNS servers in the domain
 - **Entra AD Connect Detection**: Multiple detection methods to find Azure AD Connect/Entra AD Connect installations
+- **Virtualization Detection**: Detects common virtualization platforms (VMware, Hyper-V, Citrix XenServer, VirtualBox, QEMU/KVM, Docker, AWS EC2, Azure VM)
 - **In-Memory Execution**: Runs entirely in memory, no disk writes required
 - **GitHub Optimized**: Designed for direct execution from GitHub raw URLs
 
@@ -66,6 +67,28 @@ The script uses multiple methods to detect Entra AD Connect installations:
 4. **Installed Programs**: Checks Windows installed programs
 5. **Directory Check**: Common installation paths
 
+## Detection Methods for Virtualization Platforms
+
+The script uses multiple methods to detect virtualization platforms:
+
+1. **BIOS/System Manufacturer**: Checks Win32_ComputerSystem for virtualization signatures
+2. **Service Detection**: Identifies virtualization-specific services (VMware Tools, Hyper-V Integration Services, VirtualBox Guest Additions, etc.)
+3. **Network Adapter Signatures**: Detects virtualization-specific network adapters
+4. **Registry Keys**: Checks for virtualization software registry entries
+5. **Cloud Metadata Services**: Queries AWS EC2 and Azure VM metadata endpoints
+6. **Disk Controller Signatures**: Identifies virtualization-specific SCSI controllers
+7. **Container Detection**: Detects Docker services
+
+Supported platforms:
+- VMware (vSphere/ESXi)
+- Microsoft Hyper-V
+- Citrix XenServer
+- Oracle VirtualBox
+- QEMU/KVM
+- Docker
+- AWS EC2
+- Microsoft Azure VM
+
 ## Output
 
 The script outputs:
@@ -92,11 +115,17 @@ Started: 2026-01-19 16:00:00
 [*] Discovering Entra AD Connect installations...
   [+] Entra AD Connect FOUND on: DC01 (Methods: Service, Registry)
 
+[*] Discovering Virtualization Platforms...
+  [+] Virtualization detected on DC01 : VMware
+  [+] Virtualization detected on SQL01 : Hyper-V
+  [+] Total virtualized systems: 2
+
 === Discovery Summary ===
 Domain Controllers: 2
 DHCP Servers: 1
 DNS Servers: 2
 Entra AD Connect Installations: 1
+Virtualized Systems: 2
 ```
 
 ## GitHub Setup

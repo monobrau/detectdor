@@ -769,6 +769,86 @@ function Get-VirtualizationPlatforms {
         }
     } catch {}
     
+    # Scan non-AD IPs from discovered subnets
+    Write-Host "  [*] Scanning subnets for non-AD virtualization hosts..." -ForegroundColor Gray
+    $subnetIPs = @()
+    
+    # Extract IP ranges from AD Site subnets
+    foreach ($site in $Results.ADSites) {
+        foreach ($subnet in $site.Subnets) {
+            # Subnet format is typically "192.168.1.0/24" (CIDR) or "192.168.1.0/255.255.255.0" (subnet mask)
+            $prefixLength = $null
+            $subnetIP = $null
+            
+            # Try CIDR notation first (e.g., "192.168.1.0/24")
+            if ($subnet -match '(\d+\.\d+\.\d+\.\d+)/(\d+)') {
+                $subnetIP = $matches[1]
+                $prefixLength = [int]$matches[2]
+            }
+            # Try subnet mask format (e.g., "192.168.1.0/255.255.255.0")
+            elseif ($subnet -match '(\d+\.\d+\.\d+\.\d+)/(\d+\.\d+\.\d+\.\d+)') {
+                $subnetIP = $matches[1]
+                $subnetMask = $matches[2]
+                # Convert subnet mask to prefix length
+                $prefixLength = Convert-SubnetMaskToPrefixLength -SubnetMask $subnetMask
+            }
+            
+            if ($subnetIP -and $prefixLength) {
+                # Only scan /24 or smaller subnets (avoid scanning huge ranges)
+                if ($prefixLength -ge 24 -and $prefixLength -le 32) {
+                    try {
+                        # Generate IPs to scan (sample first 10 and last 10 IPs, plus common hypervisor IPs)
+                        $ipsToScan = Get-SubnetIPsToScan -Subnet $subnetIP -PrefixLength $prefixLength
+                        $subnetIPs += $ipsToScan
+                        Write-Host "    [*] Found subnet $subnet, will scan $($ipsToScan.Count) IPs" -ForegroundColor DarkGray
+                    } catch {
+                        Write-Host "    [-] Error processing subnet $subnet : $_" -ForegroundColor DarkGray
+                    }
+                }
+            }
+        }
+    }
+    
+    # Also scan common hypervisor management IP ranges if no subnets found
+    if ($subnetIPs.Count -eq 0) {
+        Write-Host "    [*] No AD subnets found, scanning common management IP ranges..." -ForegroundColor DarkGray
+        # Common management ranges: .1, .10, .100, .200, .254
+        $localSubnet = Get-LocalSubnet
+        if ($localSubnet) {
+            $commonIPs = @(
+                "$localSubnet.1",
+                "$localSubnet.10",
+                "$localSubnet.100",
+                "$localSubnet.200",
+                "$localSubnet.254"
+            )
+            $subnetIPs += $commonIPs
+        }
+    }
+    
+    # Scan discovered IPs for virtualization
+    foreach ($ip in $subnetIPs) {
+        if ($ip -notin $serversToCheck) {
+            # Quick ping check
+            try {
+                $pingJob = Start-Job -ScriptBlock {
+                    param($ipAddr)
+                    Test-Connection -ComputerName $ipAddr -Count 1 -Quiet -ErrorAction SilentlyContinue
+                } -ArgumentList $ip
+                
+                $pingResult = Wait-Job -Job $pingJob -Timeout 1 | Receive-Job
+                Stop-Job -Job $pingJob -ErrorAction SilentlyContinue
+                Remove-Job -Job $pingJob -ErrorAction SilentlyContinue
+                
+                if ($pingResult) {
+                    # Host is alive, check for virtualization
+                    $serversToCheck += $ip
+                    Write-Host "    [+] Found alive host: $ip" -ForegroundColor DarkGray
+                }
+            } catch {}
+        }
+    }
+    
     foreach ($server in $serversToCheck) {
         Write-Host "  [*] Checking $server for virtualization..." -ForegroundColor DarkGray
         
@@ -1338,6 +1418,96 @@ function Get-NmapDetails {
     }
     
     return $null
+}
+
+# Helper function to convert subnet mask to prefix length
+function Convert-SubnetMaskToPrefixLength {
+    param([string]$SubnetMask)
+    
+    try {
+        $maskParts = $SubnetMask -split '\.'
+        $binaryMask = ""
+        foreach ($part in $maskParts) {
+            $binaryMask += [Convert]::ToString([int]$part, 2).PadLeft(8, '0')
+        }
+        return ($binaryMask -replace '0', '').Length
+    } catch {
+        return $null
+    }
+}
+
+# Helper function to get local subnet
+function Get-LocalSubnet {
+    try {
+        $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "127.*" }
+        if ($adapters) {
+            $adapter = $adapters | Select-Object -First 1
+            $ipParts = $adapter.IPAddress -split '\.'
+            return "$($ipParts[0]).$($ipParts[1]).$($ipParts[2])"
+        }
+    } catch {}
+    return $null
+}
+
+# Helper function to get IPs to scan from a subnet
+function Get-SubnetIPsToScan {
+    param(
+        [string]$Subnet,
+        [int]$PrefixLength
+    )
+    
+    $ipsToScan = @()
+    
+    try {
+        # Parse subnet
+        $subnetParts = $Subnet -split '\.'
+        $baseIP = "$($subnetParts[0]).$($subnetParts[1]).$($subnetParts[2])"
+        
+        # Calculate host range based on prefix length
+        $hostBits = 32 - $PrefixLength
+        $hostCount = [Math]::Pow(2, $hostBits)
+        
+        # For /24 subnets, scan common hypervisor IPs and a sample
+        if ($PrefixLength -eq 24) {
+            # Common hypervisor management IPs
+            $commonIPs = @(1, 10, 50, 100, 150, 200, 254)
+            foreach ($lastOctet in $commonIPs) {
+                if ($lastOctet -lt $hostCount) {
+                    $ipsToScan += "$baseIP.$lastOctet"
+                }
+            }
+            
+            # Also sample first and last few IPs
+            for ($i = 2; $i -le 10; $i++) {
+                if ($i -lt $hostCount) {
+                    $ipsToScan += "$baseIP.$i"
+                }
+            }
+            for ($i = [Math]::Max(245, $hostCount - 10); $i -lt $hostCount; $i++) {
+                $ipsToScan += "$baseIP.$i"
+            }
+        }
+        # For larger subnets (/16, /8), just scan common IPs
+        elseif ($PrefixLength -le 16) {
+            $commonThirdOctets = @(0, 1, 10, 50, 100, 200, 254)
+            foreach ($thirdOctet in $commonThirdOctets) {
+                foreach ($lastOctet in @(1, 10, 100, 254)) {
+                    if ($PrefixLength -eq 16) {
+                        $ipsToScan += "$baseIP.$thirdOctet.$lastOctet"
+                    } elseif ($PrefixLength -eq 8) {
+                        $ipsToScan += "$baseIP.$thirdOctet.1.$lastOctet"
+                    }
+                }
+            }
+        }
+        
+        # Remove duplicates
+        $ipsToScan = $ipsToScan | Select-Object -Unique
+    } catch {
+        Write-Host "    [-] Error parsing subnet $Subnet : $_" -ForegroundColor DarkGray
+    }
+    
+    return $ipsToScan
 }
 
 # Main execution function (allows parameter passing when executed from GitHub)

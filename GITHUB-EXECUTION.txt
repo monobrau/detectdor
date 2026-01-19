@@ -1,15 +1,21 @@
-GitHub Execution One-Liner
-==========================
+GitHub Execution One-Liner (with Cache-Busting)
+================================================
 
 Replace USERNAME, REPO, and BRANCH with your GitHub repository details:
 
+# Simple version (may use cached copy):
 iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content
 
-Example:
-iex (iwr -UseBasicParsing https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1).Content
+# Recommended: Force fresh download with cache-busting:
+$url = 'https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content
+
+Example (with cache-busting):
+$url = 'https://raw.githubusercontent.com/monobrau/detectdor/main/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content
 
 To save results:
-$results = iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content
+$url = 'https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; $results = iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content
 
 To export to JSON:
-iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content | ConvertTo-Json -Depth 10 | Out-File results.json
+$url = 'https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content | ConvertTo-Json -Depth 10 | Out-File results.json
+
+Note: The cache-busting version ensures you always get the latest script version.

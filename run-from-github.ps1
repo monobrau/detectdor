@@ -18,8 +18,19 @@ try {
     # Ensure TLS 1.2
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     
-    # Download and execute
-    $script = Invoke-WebRequest -Uri $GitHubUrl -UseBasicParsing
+    # Add cache-busting parameter to force fresh download
+    $separator = if ($GitHubUrl -match '\?') { '&' } else { '?' }
+    $cacheBustUrl = "$GitHubUrl$separator`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())"
+    
+    # Download with cache-busting headers
+    $headers = @{
+        'Cache-Control' = 'no-cache, no-store, must-revalidate'
+        'Pragma' = 'no-cache'
+        'Expires' = '0'
+    }
+    
+    Write-Host "Downloading fresh copy (cache-busting enabled)..." -ForegroundColor DarkGray
+    $script = Invoke-WebRequest -Uri $cacheBustUrl -Headers $headers -UseBasicParsing
     Invoke-Expression $script.Content
 } catch {
     Write-Host "Error executing script: $_" -ForegroundColor Red

@@ -7,22 +7,30 @@ PowerShell script for discovering Active Directory infrastructure components, de
 Replace `USERNAME`, `REPO`, and `BRANCH` with your GitHub details:
 
 ```powershell
-# One-liner to execute directly from GitHub
+# One-liner to execute directly from GitHub (may use cached copy)
 iex (iwr -UseBasicParsing https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1).Content
+
+# Recommended: Force fresh download with cache-busting (always gets latest version)
+$url = 'https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content
 ```
 
 ### Example GitHub Execution
 
 ```powershell
-# Example with actual GitHub repo
+# Simple version (may use cached copy)
 iex (iwr -UseBasicParsing https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1).Content
 
-# Save results to variable
-$results = iex (iwr -UseBasicParsing https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1).Content
+# Recommended: Force fresh download with cache-busting
+$url = 'https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content
 
-# Export results to JSON file
-iex (iwr -UseBasicParsing https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1).Content | ConvertTo-Json -Depth 10 | Out-File discovery-results.json
+# Save results to variable (with cache-busting)
+$url = 'https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; $results = iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content
+
+# Export results to JSON file (with cache-busting)
+$url = 'https://raw.githubusercontent.com/yourusername/detectdor/main/Invoke-ADDiscovery.ps1'; $cb = if ($url -match '\?') { '&' } else { '?' }; iex (iwr -UseBasicParsing "$url$cb`_=$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Headers @{'Cache-Control'='no-cache'}).Content | ConvertTo-Json -Depth 10 | Out-File discovery-results.json
 ```
+
+**Note:** The cache-busting version ensures you always download the latest script version, bypassing any cached copies.
 
 ## Features
 
